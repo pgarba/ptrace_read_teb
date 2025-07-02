@@ -66,11 +66,68 @@ bool read_gs_0x30(pid_t pid, uint64_t *value) {
     return false;
   }
 
+  printf("Read value: 0x%lx from 0x%lx in process %d\n", data, remote_addr,
+         pid);
+
   *value = data;
 
   // Detach from the thread
   ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
   return true;
+}
+
+// Create a function to read the TEB from all threads of a process
+// This function will iterate through all threads of the process and read the
+// TEB for each thread. It will print the value at gs:[0x30] for each thread.
+void read_teb_from_all_threads(pid_t pid) {
+  uint64_t lowest_address = -1; // Example base address for TEB
+  int lowest_tid = -1;          // To track the thread with the lowest address
+
+  char path[256];
+  snprintf(path, sizeof(path), "/proc/%d/task",
+           pid); // Path to the task directory of the process
+  DIR *dir = opendir(path);
+  if (!dir) {
+    perror("opendir");
+    return;
+  }
+  struct dirent *entry;
+  while ((entry = readdir(dir)) != nullptr) {
+    if (entry->d_type == DT_DIR) {
+      // Skip the current and parent directory entries
+      if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+        continue;
+
+      pid_t tid = atoi(entry->d_name); // Convert thread ID from string to pid_t
+      uint64_t value = 0;
+
+      lowest_tid = tid; // Initialize lowest_tid with the current thread ID
+
+      if (read_gs_0x30(tid, &value)) {
+        printf("Value at gs:[0x30] in thread %d: 0x%lx\n", tid, value);
+
+        if (value < lowest_address) {
+          lowest_address = value; // Update the lowest address found
+        }
+
+      } else {
+        fprintf(stderr, "Failed to read gs:[0x30] in thread %d\n", tid);
+      }
+    }
+  }
+  closedir(dir);
+
+  if (lowest_address != -1) {
+    printf("Lowest address found in TEBs: 0x%lx\n", lowest_address);
+  } else {
+    printf("No valid TEB addresses found.\n");
+  }
+
+  if (lowest_tid != -1) {
+    printf("Thread with lowest TEB address: %d\n", lowest_tid);
+  } else {
+    printf("No threads found.\n");
+  }
 }
 
 int main(int argc, char *argv[]) {
@@ -88,6 +145,10 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Failed to read gs:[0x30] in process %d\n", pid);
     return 1;
   }
+
+  // Read TEB from all threads of the process
+  printf("Reading TEB from all threads of process %d:\n", pid);
+  read_teb_from_all_threads(pid);
 
   return 0;
 }
