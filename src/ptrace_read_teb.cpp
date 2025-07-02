@@ -5,22 +5,27 @@
 #include <cstring>
 #include <sys/ptrace.h>
 #include <sys/types.h>
+#include <sys/user.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-// Reads the value at gs:[0x30] in the remote process with the given PID.
-// Returns true on success, false on failure. The value is stored in *value.
+// Reads the value at gs:[0x30] in the main thread of the remote process with
+// the given PID. Returns true on success, false on failure. The value is stored
+// in *value.
+#include <dirent.h>
+#include <string>
+
 bool read_gs_0x30(pid_t pid, uint64_t *value) {
   if (!value)
     return false;
 
-  // Attach to the target process
+  // Attach to the main thread
   if (ptrace(PTRACE_ATTACH, pid, nullptr, nullptr) == -1) {
     perror("ptrace(PTRACE_ATTACH)");
     return false;
   }
 
-  // Wait for the process to stop
+  // Wait for the thread to stop
   int status = 0;
   if (waitpid(pid, &status, 0) == -1) {
     perror("waitpid");
@@ -28,12 +33,16 @@ bool read_gs_0x30(pid_t pid, uint64_t *value) {
     return false;
   }
 
-  // Read the GS base from the target process's user area
-  // On x86_64, the GS base is at offset 0x68 in the user struct
-  // (see /usr/include/sys/user.h, struct user_regs_struct)
+  // Calculate the offset to gs_base in the user_regs_struct
+  // The user area is defined in <sys/user.h> and contains the user_regs_struct
+  struct user_regs_struct regs;
+  int GS_BASE_OFFSET = offsetof(struct user, regs);
+  GS_BASE_OFFSET += offsetof(struct user_regs_struct, gs_base);
+
+  // Read the GS base from the main thread's user area
   unsigned long gs_base = 0;
+
 #if defined(__x86_64__)
-  constexpr size_t GS_BASE_OFFSET = 0x68;
   errno = 0;
   gs_base = ptrace(PTRACE_PEEKUSER, pid, GS_BASE_OFFSET, nullptr);
   if (errno != 0) {
@@ -42,8 +51,7 @@ bool read_gs_0x30(pid_t pid, uint64_t *value) {
     return false;
   }
 #else
-  // Not supported on non-x86_64
-  ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
+  ptrace(PTRACE_DETACH, tid, nullptr, nullptr);
   fprintf(stderr, "Only supported on x86_64\n");
   return false;
 #endif
@@ -60,7 +68,7 @@ bool read_gs_0x30(pid_t pid, uint64_t *value) {
 
   *value = data;
 
-  // Detach from the process
+  // Detach from the thread
   ptrace(PTRACE_DETACH, pid, nullptr, nullptr);
   return true;
 }
